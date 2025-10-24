@@ -1,43 +1,63 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 
-# 🔹 1. 첫 번째 콘투어 (큰 원형)
-theta1 = np.linspace(0, 2 * np.pi, 100)
-r1 = 40
-cx1, cy1 = 50, 50  # 중심을 1사분면에 위치시킴
-contour1 = np.array([[cx1 + r1 * np.cos(t), cy1 + r1 * np.sin(t)] for t in theta1])
+# -----------------------------
+# 기본 곡선 생성
+# -----------------------------
+x = np.linspace(0, 360, 200)      # degree
+rad = np.deg2rad(x)
+y_sin = 50 + 20 * np.sin(rad)
+y_cos = 50 + 20 * np.cos(rad)
 
-# 🔹 2. 두 번째 콘투어 (타원형)
-theta2 = np.linspace(0, 2 * np.pi, 100)
-a, b = 30, 15  # 장축, 단축
-cx2, cy2 = 130, 80
-contour2 = np.array([[cx2 + a * np.cos(t), cy2 + b * np.sin(t)] for t in theta2])
+sin_seq = np.column_stack([x, y_sin])
+cos_seq = np.column_stack([x, y_cos])
 
-# 🔹 3. 렌더링
-fig, ax = plt.subplots(figsize=(7, 6))
+# -----------------------------
+# 세그먼트 생성 함수
+# -----------------------------
+def make_segments(seq, seg_len):
+    """시퀀스를 일정 픽셀 개수 단위로 나누어 세그먼트 리스트 반환"""
+    segments = []
+    n = len(seq)
+    for i in range(0, n - 1, seg_len):
+        end = min(i + seg_len + 1, n)
+        segments.append(seq[i:end])
+    return segments
 
-# 콘투어 그리기
-ax.plot(contour1[:, 0], contour1[:, 1], 'r-', label='Contour 1 (circle)')
-ax.plot(contour2[:, 0], contour2[:, 1], 'b-', label='Contour 2 (ellipse)')
+segment_length = 20
+sin_segments = make_segments(sin_seq, segment_length)
+cos_segments = make_segments(cos_seq, segment_length)
 
-# 🔹 4. 좌표계 표시
-ax.axhline(0, color='black', linewidth=1)
-ax.axvline(0, color='black', linewidth=1)
-ax.text(2, 2, '(0,0)', fontsize=10, ha='left', va='bottom')
+# -----------------------------
+# 렌더링 (모두 실선)
+# -----------------------------
+fig, ax = plt.subplots(figsize=(10, 5))
+colors_sin = cm.rainbow(np.linspace(0, 1, len(sin_segments)))
+colors_cos = cm.viridis(np.linspace(0, 1, len(cos_segments)))
 
-# 🔹 5. 축 및 비율 설정
-ax.set_xlim(0, 180)
-ax.set_ylim(0, 120)
-ax.set_aspect('equal')
+# 사인 세그먼트 렌더링
+for i, seg in enumerate(sin_segments):
+    ax.plot(seg[:, 0], seg[:, 1], color=colors_sin[i], linewidth=2)
+
+# 코사인 세그먼트 렌더링 (실선)
+for i, seg in enumerate(cos_segments):
+    ax.plot(seg[:, 0], seg[:, 1], color=colors_cos[i], linewidth=2)
+
+ax.set_title("Sine & Cosine Segmented (All Solid Lines)")
+ax.set_xlabel("x (pixels)")
+ax.set_ylabel("y (pixels)")
 ax.grid(True)
-ax.legend()
-ax.set_title("Two Closed Contours in 1st Quadrant")
-
+ax.legend(["sin segments", "cos segments"], loc="upper right")
 plt.show()
 
-# 🔹 6. 픽셀 리스트(정수형 변환 예시)
-contour1_pixels = np.round(contour1).astype(int).tolist()
-contour2_pixels = np.round(contour2).astype(int).tolist()
+# -----------------------------
+# 픽셀 세그먼트 데이터
+# -----------------------------
+sin_segments_pixels = [np.round(seg).astype(int).tolist() for seg in sin_segments]
+cos_segments_pixels = [np.round(seg).astype(int).tolist() for seg in cos_segments]
 
-print("Contour1 pixel list (first 5):", contour1_pixels[:5])
-print("Contour2 pixel list (first 5):", contour2_pixels[:5])
+print(f"Total sine segments: {len(sin_segments_pixels)}")
+print(f"Total cosine segments: {len(cos_segments_pixels)}")
+print("\nFirst sine segment (first 5 points):")
+print(sin_segments_pixels[0][:5])
