@@ -74,48 +74,54 @@ def draw_closed_curves_qt(view1, view2=None):
 
         if view2 is not None:
             print("🎨 두 곡선을 view2에 표시 중...")
+            show_two_curves_on_label(view2, closed_curves[0], closed_curves[1])
+            print("🎨 두 폐곡선 시퀀스가 view2에 표시되었습니다.")
+            # ✅ 세그먼트 분할 및 표시
+            seg_std, seg_inp = segment_and_show_on_label(view2, closed_curves[0], closed_curves[1], num_segments=10)
 
-            # ✅ 스케일 정규화 후 view2 크기에 맞게 변환
-            w1, h1 = view1.viewport().width(), view1.viewport().height()
-            w2, h2 = view2.width(), view2.height()
 
-            def normalize_to_view2(curve):
-                # view1 비율 기반 정규화 → view2 크기 재스케일
-                x = (curve[:, 0] / w1) * w2
-                y = (curve[:, 1] / h1) * h2
-                return np.column_stack([x, y])
+            if False:
+                        # ✅ 스케일 정규화 후 view2 크기에 맞게 변환
+                        w1, h1 = view1.viewport().width(), view1.viewport().height()
+                        w2, h2 = view2.width(), view2.height()
 
-            c1 = normalize_to_view2(closed_curves[0])
-            c2 = normalize_to_view2(closed_curves[1])
+                        def normalize_to_view2(curve):
+                            # view1 비율 기반 정규화 → view2 크기 재스케일
+                            x = (curve[:, 0] / w1) * w2
+                            y = (curve[:, 1] / h1) * h2
+                            return np.column_stack([x, y])
 
-            # ✅ QLabel 표시용 QPixmap 생성
-            from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QPen
-            from PyQt6.QtCore import Qt
+                        c1 = normalize_to_view2(closed_curves[0])
+                        c2 = normalize_to_view2(closed_curves[1])
 
-            pixmap = QPixmap(w2, h2)
-            pixmap.fill(Qt.GlobalColor.white)
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                        # ✅ QLabel 표시용 QPixmap 생성
+                        from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QPen
+                        from PyQt6.QtCore import Qt
 
-            # 곡선 1 (빨강)
-            pen1 = QPen(QColor("red"), 2)
-            painter.setPen(pen1)
-            for i in range(len(c1) - 1):
-                painter.drawLine(int(c1[i, 0]), int(c1[i, 1]),
-                                 int(c1[i+1, 0]), int(c1[i+1, 1]))
+                        pixmap = QPixmap(w2, h2)
+                        pixmap.fill(Qt.GlobalColor.white)
+                        painter = QPainter(pixmap)
+                        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-            # 곡선 2 (파랑)
-            pen2 = QPen(QColor("blue"), 2)
-            painter.setPen(pen2)
-            for i in range(len(c2) - 1):
-                painter.drawLine(int(c2[i, 0]), int(c2[i, 1]),
-                                 int(c2[i+1, 0]), int(c2[i+1, 1]))
+                        # 곡선 1 (빨강)
+                        pen1 = QPen(QColor("red"), 2)
+                        painter.setPen(pen1)
+                        for i in range(len(c1) - 1):
+                            painter.drawLine(int(c1[i, 0]), int(c1[i, 1]),
+                                             int(c1[i+1, 0]), int(c1[i+1, 1]))
 
-            painter.end()
+                        # 곡선 2 (파랑)
+                        pen2 = QPen(QColor("blue"), 2)
+                        painter.setPen(pen2)
+                        for i in range(len(c2) - 1):
+                            painter.drawLine(int(c2[i, 0]), int(c2[i, 1]),
+                                             int(c2[i+1, 0]), int(c2[i+1, 1]))
 
-            # QLabel에 표시
-            view2.setPixmap(pixmap)
-            print("🎯 view2에 스케일 정규화된 두 곡선이 표시되었습니다.")
+                        painter.end()
+
+                        # QLabel에 표시
+                        view2.setPixmap(pixmap)
+                        print("🎯 view2에 스케일 정규화된 두 곡선이 표시되었습니다.")
 
     class Filter(QObject):
         def eventFilter(self, obj, event):
@@ -161,3 +167,68 @@ def draw_closed_curves_qt(view1, view2=None):
         app.processEvents()
 
     return closed_curves[0], closed_curves[1]
+
+
+def segment_and_show_on_label(view2, curve_std, curve_inp, num_segments=10):
+    """
+    두 곡선을 일정한 픽셀 수 기준으로 분할 후 view2(QLabel)에 표시
+    """
+    from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen
+    from PyQt6.QtCore import Qt
+    import matplotlib.cm as cm
+
+    w2, h2 = view2.width(), view2.height()
+    pixmap = QPixmap(w2, h2)
+    pixmap.fill(Qt.GlobalColor.white)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    def segment_curve(curve, n_seg):
+        """곡선을 거리 기반 균등 분할"""
+        dist = np.sqrt(np.sum(np.diff(curve, axis=0)**2, axis=1))
+        total = np.sum(dist)
+        step = total / n_seg
+        segments = []
+        acc = 0
+        seg = [curve[0]]
+        for i in range(1, len(curve)):
+            d = dist[i-1]
+            acc += d
+            seg.append(curve[i])
+            if acc >= step:
+                segments.append(np.array(seg))
+                seg = [curve[i]]
+                acc = 0
+        if len(seg) > 1:
+            segments.append(np.array(seg))
+        return segments[:n_seg]
+
+    # 세그먼트화
+    seg_std = segment_curve(curve_std, num_segments)
+    seg_inp = segment_curve(curve_inp, num_segments)
+
+    # 색상 팔레트
+    cmap_std = cm.rainbow(np.linspace(0, 1, len(seg_std)))
+    cmap_inp = cm.viridis(np.linspace(0, 1, len(seg_inp)))
+
+    # 표준 곡선 (굵게)
+    for i, seg in enumerate(seg_std):
+        color = QColor.fromRgbF(*cmap_std[i])
+        painter.setPen(QPen(color, 3))
+        for j in range(len(seg)-1):
+            painter.drawLine(int(seg[j, 0]), int(seg[j, 1]),
+                             int(seg[j+1, 0]), int(seg[j+1, 1]))
+
+    # 입력 곡선 (얇게)
+    for i, seg in enumerate(seg_inp):
+        color = QColor.fromRgbF(*cmap_inp[i])
+        painter.setPen(QPen(color, 2))
+        for j in range(len(seg)-1):
+            painter.drawLine(int(seg[j, 0]), int(seg[j, 1]),
+                             int(seg[j+1, 0]), int(seg[j+1, 1]))
+
+    painter.end()
+    view2.setPixmap(pixmap)
+
+    print(f"🎯 {len(seg_std)}개 세그먼트로 분할 완료 및 표시됨.")
+    return seg_std, seg_inp
