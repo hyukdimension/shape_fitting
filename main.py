@@ -1,205 +1,328 @@
-from generate import draw_closed_curves
-from coords import pixel_to_math, math_to_pixel
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import cv2
-from scipy.ndimage import map_coordinates
+# main.py (통합 버전)
+import sys, re, cv2, numpy as np, time
 from pathlib import Path
+from typing import Optional, List, Tuple, Literal
+from PyQt6 import QtWidgets, uic
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap, QKeySequence, QShortcut
+from PyQt6.QtWidgets import QProgressBar
 
-# =========================================================
-# 설정
-# =========================================================
-segment_length = 20
-sigma_src = 80
-IMG_PATH = Path(__file__).resolve().parent / "background.jpg"
+# 스틸 이미지 처리부 import
+from image_io import load_png_as_gray
 
-# =========================================================
-# 1️⃣ 두 폐곡선 입력
-# =========================================================
-curve_std, curve_inp = draw_closed_curves()
-print(f"✅ 곡선 입력 완료: {len(curve_std)}, {len(curve_inp)}")
+from show_generated_views import show_generated_views
 
-# =========================================================
-# 2️⃣ 배경 이미지
-# =========================================================
-if IMG_PATH.exists():
-    img = cv2.imread(str(IMG_PATH))
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-else:
-    h, w = 300, 800
-    img = np.zeros((h, w, 3), dtype=np.uint8)
-    for i in range(h):
-        img[i, :, 0] = np.linspace(0, 255, w).astype(np.uint8)
-        img[i, :, 1] = 255 - np.linspace(0, 255, w).astype(np.uint8)
 
-img = np.flipud(img)
-h, w, _ = img.shape
+def to_pixmap(bgr: np.ndarray) -> QPixmap:
+    if bgr is None or bgr.size == 0:
+        return QPixmap()
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    h, w, ch = rgb.shape
+    qimg = QImage(rgb.data, w, h, w*ch, QImage.Format.Format_RGB888)
+    return QPixmap.fromImage(qimg)
 
-# =========================================================
-# 3️⃣ 위치 정규화 (영상 중앙으로 이동)
-# =========================================================
-center_img = np.array([w / 2, h / 2])
 
-def recenter_curve(curve):
-    center_curve = np.mean(curve, axis=0)
-    shift = center_img - center_curve
-    return curve + shift
+# ============ Main 클래스 ============
+class Main(QtWidgets.QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.ui = uic.loadUi("main_window.ui", self)
 
-curve_std = recenter_curve(curve_std)
-curve_inp = recenter_curve(curve_inp)
+        # ========== 윈도우 크기 및 위치 설정 ==========
+        self.showMaximized()
 
-# =========================================================
-# 4️⃣ 세그먼트 분할
-# =========================================================
-def make_segments(seq, seg_len):
-    segs = []
-    n = len(seq)
-    for i in range(0, n - 1, seg_len):
-        end = min(i + seg_len + 1, n)
-        segs.append(seq[i:end])
-    return segs
+        self.mode = None
+        
+        # ========== FFmpeg Rate 파라미터 (하드코딩) ==========
+        self.SAMPLE_RATE = 5.0 # 30.0
+        self.DISPLAY_RATE = 5.0 # 30.0
+        self.BUDGET_RATE = 5.0 # 30.0
+        
+        # UI에 표시 (*.ui 파일의 QLabel이 있다고 가정)
+        if hasattr(self, 'labelSampleRate'):
+            self.labelSampleRate.setText(f"Sample Rate: {self.SAMPLE_RATE} Hz")
+        if hasattr(self, 'labelDisplayRate'):
+            self.labelDisplayRate.setText(f"Display Rate: {self.DISPLAY_RATE} Hz")
+        if hasattr(self, 'labelBudgetRate'):
+            self.labelBudgetRate.setText(f"Budget Rate: {self.BUDGET_RATE} Hz")
+        
+        # ========== 처리 파라미터 (공유) ==========
+        self.processing_params = {
+            'delc_range': (-3, 3), # Todo: 이 값의 폭이 c_range보다 커야하는거 아닌지? 확인하기
+            'K': 5,
+            'c_range': (-2, 2),
+            'select_line': 'top', # 바이너리 밴드에서 center col을 구한다. 그 밑의 히스토그램 말고.
+            'threshold': 50  # ← threshold 추가 # Todo : 슬라이드로 값 변경 테스트할때만 쓰였던거다. 로직에선 안 쓰이니, 응용만 하고 지운다.
+        }
+        # =============================================
+        
+        # 위젯
+        self.btnOpen   = self.findChild(QtWidgets.QPushButton, "btnOpen")
+        self.btnRun    = self.findChild(QtWidgets.QPushButton, "btnRun")
+        self.btnStop    = self.findChild(QtWidgets.QPushButton, "btnStop")
+        self.btnPause  = self.findChild(QtWidgets.QPushButton, "btnPause")
+        self.btnExit   = self.findChild(QtWidgets.QPushButton, "btnExit")
+        self.labelPath = self.findChild(QtWidgets.QLabel,    "labelPath")
+        self.slider1   = self.findChild(QtWidgets.QSlider,   "slider1")
+        #self.view1     = self.findChild(QtWidgets.QLabel,    "preview_1")
+        self.view1 = self.findChild(QtWidgets.QGraphicsView, "preview_1")
+        self.view2     = self.findChild(QtWidgets.QLabel,    "preview_2")
+        self.view3     = self.findChild(QtWidgets.QLabel,    "preview_3")
+        self.view4     = self.findChild(QtWidgets.QLabel,    "preview_4")
+        self.view5     = self.findChild(QtWidgets.QLabel,    "preview_5")
+        self.view6     = self.findChild(QtWidgets.QLabel,    "preview_6")
+        self.view7     = self.findChild(QtWidgets.QLabel,    "preview_7")
+        self.view8     = self.findChild(QtWidgets.QLabel,    "preview_8")
+        self.view9     = self.findChild(QtWidgets.QLabel,    "preview_9")
 
-std_segments = make_segments(curve_std, segment_length)
-inp_segments = make_segments(curve_inp, segment_length)
 
-# =========================================================
-# 5️⃣ 초기 렌더링
-# =========================================================
-fig, ax = plt.subplots(figsize=(10, 5))
-ax.imshow(img, extent=[0, w, 0, h], origin="lower")
-colors_std = cm.rainbow(np.linspace(0, 1, len(std_segments)))
-colors_inp = cm.viridis(np.linspace(0, 1, len(inp_segments)))
+        for v in (self.view1, self.view2, self.view3, self.view4, self.view5, self.view6, self.view7, self.view8, self.view9):
+            v.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            v.setMinimumSize(320, 180)
+            v.setStyleSheet("QLabel { background:#20252b; color:#d0d4d9; }")
 
-# Standard (굵게)
-for i, seg in enumerate(std_segments):
-    ax.plot(seg[:, 0], seg[:, 1],
-            color=colors_std[i],
-            linewidth=3.5,
-            alpha=0.9,
-            zorder=3)
 
-# Input (얇게)
-for i, seg in enumerate(inp_segments):
-    ax.plot(seg[:, 0], seg[:, 1],
-            color=colors_inp[i],
-            linewidth=1.8,
-            alpha=0.8,
-            zorder=2)
+        # 비디오 모드 상태
+        self.cap: Optional[cv2.VideoCapture] = None
+        self.frame_idx: int = -1
+        self.frame_n: Optional[np.ndarray] = None
+        self.frame_np1: Optional[np.ndarray] = None
+        
+        # VideoThread (추가)
+        self.video_thread: Optional[VideoThread] = None
 
-ax.set_title("Click standard → input | ESC to apply warp")
-ax.set_xlabel("x")
-ax.set_ylabel("y")
-ax.grid(True)
-plt.tight_layout()
+        # 스틸 모드 상태
+        self.input_dir: Optional[Path] = None
+        self.out_dir: Optional[Path] = None
+        self.still_seq: Optional[List[Tuple[Path, int]]] = None
+        self.still_pair_idx: int = 0
 
-# =========================================================
-# 6️⃣ 인터랙션 (세그먼트 페어 선택)
-# =========================================================
-selected_pairs = []
-click_count = 0
-current_selection = []
-interaction_active = True
+        # 연결
+        self.btnRun.clicked.connect(self.step_forward)
+        self.btnExit.clicked.connect(self.close)
 
-def select_segment(seg_list, x_click, y_click):
-    centers = [np.mean(seg, axis=0) for seg in seg_list]
-    dists = [np.hypot(cx - x_click, cy - y_click) for cx, cy in centers]
-    return int(np.argmin(dists))
+        QShortcut(QKeySequence("F5"), self, activated=self.step_forward)
 
-def on_click(event):
-    global click_count, current_selection
-    if not interaction_active or event.inaxes != ax:
-        return
-    x_click, y_click = event.xdata, event.ydata
-    curve_type = 'standard' if click_count % 2 == 0 else 'input'
-    seg_list = std_segments if curve_type == 'standard' else inp_segments
-    idx = select_segment(seg_list, x_click, y_click)
-    seg = seg_list[idx]
-    ax.plot(seg[:, 0], seg[:, 1], color='yellow', linewidth=4, zorder=5)
-    fig.canvas.draw_idle()
-    current_selection.append((curve_type, idx))
-    click_count += 1
-    if click_count % 2 == 0:
-        selected_pairs.append(tuple(current_selection))
-        print(f"✅ Pair {len(selected_pairs)} selected → {selected_pairs[-1]}")
-        current_selection = []
+        self.statusBar().showMessage(
+            "파일 선택: 비디오 또는 스틸 이미지 1개. 실행: 비디오 전진/스틸 한 스텝 처리.",
+            5000
+        )
+        
+        # 슬라이더 연결 수정
+        if self.slider1 is not None:
+            # slider1 범위 설정 (0~255)
+            self.slider1.setMinimum(0)
+            self.slider1.setMaximum(255)
+            self.slider1.setValue(50)  # 초기값
+            self.slider1.valueChanged.connect(self.on_threshold_changed)
 
-def on_key(event):
-    global interaction_active
-    if event.key == 'escape':
-        interaction_active = False
-        fig.canvas.mpl_disconnect(cid_click)
-        fig.canvas.mpl_disconnect(cid_key)
-        plt.close(fig)
-        print("\n🚪 ESC pressed — applying warp...\n")
-        apply_soft_warp(selected_pairs)
+        # __init__에서
+        views = [
+            (self.view2, "현재 프레임"),
+            (self.view3, "중간 단계"),
+            (self.view4, "중간 단계"),
+            (self.view5, "중간 단계"),
+            (self.view6, "중간 단계"),
+            (self.view7, "중간 단계"),
+            (self.view8, "중간 단계"),
+            (self.view9, "처리 결과"),
+        ]
 
-# =========================================================
-# 7️⃣ 문지르기 스타일 와핑 + 화살표 표시
-# =========================================================
-def apply_soft_warp(pairs):
-    global std_segments
-    yy, xx = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
-    dx = np.zeros_like(xx, dtype=np.float32)
-    dy = np.zeros_like(yy, dtype=np.float32)
-    arrows = []
+        for view, text in views:
+            # Todo: discard it. view.setText(text)
+            view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            view.setStyleSheet("""
+                QLabel {
+                    background-color: #1e1e1e;
+                    color: #808080;
+                    border: 2px dashed #404040;
+                    font-size: 16px;
+                    font-weight: bold;
+                }
+            """)
 
-    for pair in pairs:
-        std_idx = pair[0][1]
-        inp_idx = pair[1][1]
-        c_std = np.mean(std_segments[std_idx], axis=0)
-        c_inp = np.mean(inp_segments[inp_idx], axis=0)
-        delta = c_inp - c_std
-        print(f"Pair: std {std_idx} → inp {inp_idx}, Δ = {delta.round(2)}")
+        # 아이콘 파일 사용 (icons/placeholder.png)
+        pixmap = QPixmap("icons/play.png")
+        scaled_pixmap = pixmap.scaled(
+            self.view1.size(),  # QLabel의 현재 크기
+            Qt.AspectRatioMode.KeepAspectRatio  # 비율 유지
+        )
+        # Todo self.view1.setPixmap(scaled_pixmap)
+        pixmap = QPixmap("icons/play.png")
+        scaled_pixmap = pixmap.scaled(
+            self.view2.size(),  # QLabel의 현재 크기
+            Qt.AspectRatioMode.KeepAspectRatio,  # 비율 유지
+            Qt.TransformationMode.SmoothTransformation  # 부드럽게 리사이즈
+        )
+        self.view2.setPixmap(scaled_pixmap)
 
-        d2 = (xx - c_std[0])**2 + (yy - c_std[1])**2
-        influence = np.exp(-d2 / (2 * sigma_src**2))
-        dx += delta[0] * influence * 0.3
-        dy += delta[1] * influence * 0.3
 
-        std_segments[std_idx] = std_segments[std_idx] + delta
-        arrows.append((c_std, delta))
+    def on_progress_update(self, stage: str, image: np.ndarray):
+        """중간 결과 업데이트"""
+        height, width = image.shape[:2]
 
-    # 반전 적용
-    xmap = np.clip(xx - dx, 0, w - 1)
-    ymap = np.clip(yy - dy, 0, h - 1)
+        # 채널 수 출력 (디버깅)
+        if len(image.shape) == 2:
+            print(f"[DEBUG] {stage}: Grayscale image ({height}x{width}) - converting to colormap")
+            channels = 1
 
-    warped = np.zeros_like(img)
-    for c in range(3):
-        warped[..., c] = map_coordinates(img[..., c], [ymap, xmap], order=1)
+            # Grayscale → 컬러맵 (0=빨강, 최대값=초록)
+            # 정규화
+            img_normalized = image.astype(np.float32)
+            img_min = img_normalized.min()
+            img_max = img_normalized.max()
 
-    # 와핑 결과 시각화
-    fig2, ax2 = plt.subplots(figsize=(10, 5))
-    ax2.imshow(warped, extent=[0, w, 0, h], origin="lower")
+            if img_max > img_min:
+                img_normalized = (img_normalized - img_min) / (img_max - img_min)
+            else:
+                img_normalized = np.zeros_like(img_normalized)
 
-    for i, seg in enumerate(std_segments):
-        ax2.plot(seg[:, 0], seg[:, 1],
-                 color=colors_std[i],
-                 linewidth=3.5,
-                 alpha=0.9,
-                 zorder=3)
-    for i, seg in enumerate(inp_segments):
-        ax2.plot(seg[:, 0], seg[:, 1],
-                 color=colors_inp[i],
-                 linewidth=1.8,
-                 alpha=0.8,
-                 zorder=2)
+            # RGB 생성: 0 → (255, 0, 0) 빨강, 1 → (0, 255, 0) 초록
+            red = ((1.0 - img_normalized) * 255).astype(np.uint8)
+            green = (img_normalized * 255).astype(np.uint8)
+            blue = np.zeros_like(red)
 
-    for c_src, delta in arrows:
-        ax2.arrow(c_src[0], c_src[1], delta[0], delta[1],
-                  head_width=3, head_length=6, fc='lime', ec='black',
-                  lw=0.8, alpha=0.9, zorder=5)
-        ax2.scatter(c_src[0], c_src[1], s=25,
-                    color='lime', edgecolors='black', zorder=6)
+            # BGR로 합치기
+            image = cv2.merge([blue, green, red])  # OpenCV는 BGR 순서
 
-    ax2.set_title("Soft Warp + Segment Arrows")
-    ax2.grid(True)
-    plt.tight_layout()
-    plt.show()
+        else:
+            channels = image.shape[2]
+            print(f"[DEBUG] {stage}: Color image ({height}x{width}x{channels})")
 
-# =========================================================
-# 8️⃣ 이벤트 연결
-# =========================================================
-cid_click = fig.canvas.mpl_connect('button_press_event', on_click)
-cid_key = fig.canvas.mpl_connect('key_press_event', on_key)
-plt.show()
+        # 이미지는 이제 항상 컬러
+        height, width = image.shape[:2]
+        bytes_per_line = 3 * width
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        q_image = QImage(rgb_image.data, width, height, bytes_per_line,
+                         QImage.Format.Format_RGB888)
+
+        pixmap = QPixmap.fromImage(q_image)
+
+        # 단계별로 적절한 라벨에 표시
+        if stage == "direction":
+            self.view4.setPixmap(pixmap.scaled(self.view4.size(), Qt.AspectRatioMode.KeepAspectRatio))
+        elif stage == "histogram":
+            dummy = 1
+
+
+    def on_threshold_changed(self, value):
+        """슬라이더 값 변경 → threshold 업데이트"""
+        self.processing_params['threshold'] = value
+        print(f"[PARAM] Threshold updated: {value}")
+        
+        # 상태바에 표시 (선택)
+        self.statusBar().showMessage(f"Threshold: {value}", 1000)
+
+
+
+    # ---------- 공용: 라벨 지우기 ----------
+    def _clear_views(self):
+        for v in (self.view1, self.view2, self.view3, self.view4, self.view5, self.view6, self.view7, self.view8, self.view9):
+            v.setPixmap(QPixmap())
+            v.setText("")
+
+    # ---------- 스틸 시퀀스(5장) 수집/검증 ----------
+    def _collect_still_sequence(self, dir_path: Path, expected_count: int = 5) -> Optional[List[Tuple[Path, int]]]:
+        """기존 코드 그대로"""
+        pat = re.compile(r"^frame_(\d{10})\.png$")
+        cand: List[Tuple[Path, int]] = []
+        for p in sorted(dir_path.glob("frame_*.png")):
+            m = pat.match(p.name)
+            if m:
+                cand.append((p, int(m.group(1))))
+
+        if len(cand) != expected_count:
+            QtWidgets.QMessageBox.critical(
+                self, "에러",
+                f"스틸 이미지 개수 불일치: {len(cand)}개 발견 (필요: {expected_count}개)\n경로: {dir_path}"
+            )
+            QtWidgets.QApplication.instance().exit(1)
+            return None
+
+        cand.sort(key=lambda x: x[1])
+        nums = [n for _, n in cand]
+        for i in range(len(nums) - 1):
+            if nums[i+1] != nums[i] + 1:
+                QtWidgets.QMessageBox.critical(
+                    self, "에러",
+                    f"연속 번호 아님: {nums[i]} 다음이 {nums[i+1]} (연속 필요)\n경로: {dir_path}"
+                )
+                QtWidgets.QApplication.instance().exit(1)
+                return None
+
+        return cand
+
+    def _detect_input_mode(self, folder: Path) -> Literal["stills", "video", "invalid"]:
+        """기존 코드 그대로"""
+        folder = Path(folder)
+        if not folder.exists() or not folder.is_dir():
+            return "invalid"
+
+        png_count = mp4_count = other_count = dir_count = 0
+
+        for p in folder.iterdir():
+            if p.is_dir():
+                dir_count += 1
+                continue
+            ext = p.suffix.lower()
+            if ext == ".png":
+                png_count += 1
+            elif ext == ".mp4":
+                mp4_count += 1
+            else:
+                other_count += 1
+
+        if dir_count == 0 and other_count == 0 and mp4_count == 0 and png_count >= 1:
+            return "stills"
+        elif dir_count == 0 and other_count == 0 and png_count == 0 and mp4_count == 1:
+            return "video"
+        else:
+            return "invalid"
+
+    def still_step_once(self):
+        """기존 코드 그대로"""
+        if not getattr(self, "input_dir", None) or not getattr(self, "out_dir", None):
+            QtWidgets.QMessageBox.warning(self, "안내", "먼저 스틸 이미지를 파일 선택으로 지정하세요.")
+            return
+        if not getattr(self, "still_seq", None) or len(self.still_seq) < 2:
+            QtWidgets.QMessageBox.warning(self, "안내", "스틸 이미지가 2장 이상 필요합니다.")
+            return
+
+        total_pairs = len(self.still_seq) - 1
+        if not hasattr(self, "still_pair_idx") or self.still_pair_idx is None:
+            self.still_pair_idx = 0
+
+        i = self.still_pair_idx
+        if i >= total_pairs:
+            QtWidgets.QMessageBox.information(self, "완료", "모든 인접 페어 처리가 끝났습니다.")
+            return
+
+        img1, n1 = self.still_seq[i]
+        img2, n2 = self.still_seq[i + 1]
+
+        im1 = load_png_as_gray(str(img1))
+        im2 = load_png_as_gray(str(img2))
+        if im1 is None or im2 is None:
+            QtWidgets.QMessageBox.critical(self, "에러", f"이미지 로드 실패:\n{img1}\n{img2}")
+            return
+
+    # ========== 기존 메소드들 (그대로 유지) ==========
+    def step_forward(self):
+        """Run 버튼 눌렀을 때 동작"""
+
+        show_generated_views(self.view1, self.view2)
+
+
+        QtWidgets.QMessageBox.warning(self, "오류", f"알 수 없는 모드: {self.mode}")
+
+def main():
+    app = QtWidgets.QApplication(sys.argv)
+    # 🔹 스타일 지정
+    app.setStyle("Fusion")  # 또는 "Windows", "macOS", "WindowsVista" 등
+    w = Main()
+    w.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
