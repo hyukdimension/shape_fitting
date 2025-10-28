@@ -65,7 +65,7 @@ class Main(QtWidgets.QMainWindow):
         self.labelPath = self.findChild(QtWidgets.QLabel,    "labelPath")
         self.slider1   = self.findChild(QtWidgets.QSlider,   "slider1")
         #self.view1     = self.findChild(QtWidgets.QLabel,    "preview_1")
-        self.view1 = self.findChild(QtWidgets.QGraphicsView, "preview_1")
+        self.view1     = self.findChild(QtWidgets.QGraphicsView, "preview_1")
         self.view2     = self.findChild(QtWidgets.QLabel,    "preview_2")
         self.view3     = self.findChild(QtWidgets.QLabel,    "preview_3")
         self.view4     = self.findChild(QtWidgets.QLabel,    "preview_4")
@@ -76,10 +76,15 @@ class Main(QtWidgets.QMainWindow):
         self.view9     = self.findChild(QtWidgets.QLabel,    "preview_9")
 
 
+        # ✅ 수정된 코드
         for v in (self.view1, self.view2, self.view3, self.view4, self.view5, self.view6, self.view7, self.view8, self.view9):
-            v.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # v.setAlignment(Qt.AlignmentFlag.AlignCenter)  # ← 주석 처리 또는 삭제
+            v.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)  # ✅ 좌상단 정렬
             v.setMinimumSize(320, 180)
             v.setStyleSheet("QLabel { background:#20252b; color:#d0d4d9; }")
+            
+            fixed_w, fixed_h = 320, 180
+            v.setFixedSize(fixed_w, fixed_h)
 
 
         # 비디오 모드 상태
@@ -117,6 +122,7 @@ class Main(QtWidgets.QMainWindow):
             self.slider1.valueChanged.connect(self.on_threshold_changed)
 
         # __init__에서
+        # 아래쪽 views 반복문도 수정
         views = [
             (self.view2, "현재 프레임"),
             (self.view3, "중간 단계"),
@@ -129,8 +135,7 @@ class Main(QtWidgets.QMainWindow):
         ]
 
         for view, text in views:
-            # Todo: discard it. view.setText(text)
-            view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            view.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)  # ✅ 좌상단
             view.setStyleSheet("""
                 QLabel {
                     background-color: #1e1e1e;
@@ -310,7 +315,7 @@ class Main(QtWidgets.QMainWindow):
     def step_forward(self):
         """Run 버튼 눌렀을 때 동작"""
 
-        show_generated_views(self.view1, self.view2)
+        show_generated_views(self.view1, self.view2, self.view3, self.view4, self.view5)
 
 
         QtWidgets.QMessageBox.warning(self, "오류", f"알 수 없는 모드: {self.mode}")
