@@ -114,9 +114,15 @@ def draw_closed_curves_qt(
         matcher = SegmentMatcher(
             view2, curve_std, curve_obj,
             num_segments=10,
-            segmentation_method="points"
+            segmentation_method="points",
+            im_std=im_std_scaled,
+            im_obj=im_obj_scaled,
+            im_std_scaled=im_std_scaled,
+            im_obj_scaled=im_obj_scaled,
+            view3=view3,
+            view5=view5
         )
         matcher.enable_selection()
         print("🎯 Segment matching enabled")
 
-    return curve_std, curve_obj, im_std_scaled, im_obj_scaled
+    return curve_std, curve_obj

@@ -17,5 +17,5 @@ def show_generated_views(view1, view2, view3, view4, view5):
     view2: QLabel (표시용)
     """
     print("✅ show_generated_views 호출됨")
-    curve_std, curve_inp, im_std, im_obj = draw_closed_curves_qt(view1, view2, view3, view4, view5)
+    curve_std, curve_inp = draw_closed_curves_qt(view1, view2, view3, view4, view5)
     print("✅ 두 곡선 입력 완료")

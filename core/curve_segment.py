@@ -115,8 +115,14 @@ class SegmentMatcher:
         label: QLabel,
         curve_std: np.ndarray,
         curve_obj: np.ndarray,
+        im_std_scaled: np.ndarray,
+        im_obj_scaled: np.ndarray,
         num_segments: int = 10,
-        segmentation_method: str = "points"
+        segmentation_method: str = "points",
+        im_std: Optional[np.ndarray] = None,
+        im_obj: Optional[np.ndarray] = None,
+        view3: Optional[QLabel] = None,
+        view5: Optional[QLabel] = None
     ):
         """
         Parameters
@@ -131,9 +137,25 @@ class SegmentMatcher:
             Number of segments per curve
         segmentation_method : str
             "distance" or "points"
+        im_std : np.ndarray, optional
+            Standard image (scaled) for view3
+        im_obj : np.ndarray, optional
+            Object image (scaled) for view5
+        view3 : QLabel, optional
+            View for standard image
+        view5 : QLabel, optional
+            View for object image
         """
         self.label = label
         self.num_segments = num_segments
+        self.im_std = im_std
+        self.im_obj = im_obj
+        self.view3 = view3
+        self.view5 = view5
+        self.patch_size = 11  # Size of pixel patch to copy
+        self.im_std_scaled = im_std_scaled
+        self.im_obj_scaled = im_obj_scaled
+
         
         # Segment curves
         if segmentation_method == "distance":
@@ -173,7 +195,22 @@ class SegmentMatcher:
             painter.setPen(QPen(color, 1.5))
             painter.drawPath(path)
     
-    def draw_arrows(self, painter: QPainter):
+    def calc_pointpairs_of_arrows(self, pts: list):
+        """Draw arrows between matched segments."""
+        
+        for i, (std_idx, obj_idx) in enumerate(self.selected_pairs):
+            c_std = np.mean(self.seg_std[std_idx], axis=0)
+            c_obj = np.mean(self.seg_obj[obj_idx], axis=0)
+            
+            p1 = [float(c_std[0]), float(c_std[1])]
+            p2 = [float(c_obj[0]), float(c_obj[1])]
+
+            pts.append([p1, p2])
+
+        return pts
+
+
+    def draw_arrows(self, painter: QPainter, pts: np.ndarray):
         """Draw arrows between matched segments."""
         arrow_pen = QPen(Qt.GlobalColor.black, 2)
         painter.setPen(arrow_pen)
@@ -201,7 +238,67 @@ class SegmentMatcher:
             )
             painter.drawLine(p2, start)
             painter.drawLine(p2, end)
-    
+
+
+    def move_pixels(self, pts: list, patch_size=11, blend_ratio=1.0):
+        """
+        view5: Qlabel - 결과 이미지를 표시할 뷰
+        im_std_resized: view3에 표시된 리사이즈된 std 이미지 (gray, HxW)
+        im_obj_resized: view4/5에 표시된 리사이즈된 obj 이미지 (gray, HxW)
+        pts: [(std_center, obj_center), ...]  — view 좌표 기준
+        patch_size: odd number, default 11
+        blend_ratio: float, default 0.2 (20% std + 80% obj)
+        """
+        import numpy as np
+
+        from core.image_display import show_grayscale_on_label  # ✅ 이미 네 코드에 존재하는 함수 재활용
+
+        im_std = self.im_std_scaled.copy()
+        im_obj = self.im_obj_scaled.copy()
+        im_disp = self.im_obj_scaled.copy()
+        H, W = im_disp.shape
+        r = patch_size // 2
+        alpha = blend_ratio
+        beta = 1.0 - alpha
+
+        for std_pt, obj_pt in pts:
+            x1, y1 = int(std_pt[0]), int(std_pt[1])
+            x2, y2 = int(obj_pt[0]), int(obj_pt[1])
+
+            # 범위 제한 (clamp)
+            xs1, xe1 = max(0, x1 - r), min(W, x1 + r + 1)
+            ys1, ye1 = max(0, y1 - r), min(H, y1 + r + 1)
+
+            xs2, xe2 = max(0, x2 - r), min(W, x2 + r + 1)
+            ys2, ye2 = max(0, y2 - r), min(H, y2 + r + 1)
+
+            patch_std = im_std[ys1:ye1, xs1:xe1]
+            patch_obj = im_obj[ys2:ye2, xs2:xe2]
+
+            # 모서리 등에서 패치 크기 안 맞는 경우
+            h = min(patch_std.shape[0], patch_obj.shape[0])
+            w = min(patch_std.shape[1], patch_obj.shape[1])
+            patch_std = patch_std[:h, :w]
+            patch_obj = patch_obj[:h, :w]
+
+            # 블렌딩
+            blended = (alpha * patch_std + beta * patch_obj).astype(np.uint8)
+            im_disp[ys2:ys2+h, xs2:xs2+w] = blended
+
+        # 🔥 view5에 바로 표시
+        # Get base size from view1
+        base_w = self.view5.width()
+        base_h = self.view5.height()
+        base_size = (base_w, base_h)
+
+        im_result = show_grayscale_on_label(self.view5, im_disp, base_size, add_corner_markers=True)
+
+        print(f"✅ view5 갱신 완료 ({len(pts)}개의 픽셀 이동, patch={patch_size}x{patch_size})")
+
+        # 리턴도 가능 (원하면 결과 배열을 추가 반환)
+        return im_disp
+
+
     def redraw(self):
         """Redraw the entire view."""
         pixmap = QPixmap(self.label.width(), self.label.height())
@@ -210,11 +307,13 @@ class SegmentMatcher:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         self.draw_segments(painter)
-        self.draw_arrows(painter)
-        self.move_pixels(painter)
-        
+        pts = []
+        pts = self.calc_pointpairs_of_arrows(pts)
+        self.draw_arrows(painter, pts)
         painter.end()
         self.label.setPixmap(pixmap)
+        print(pts)
+        _ = self.move_pixels(pts)
     
     def on_click(self, event):
         """Handle mouse click event."""
